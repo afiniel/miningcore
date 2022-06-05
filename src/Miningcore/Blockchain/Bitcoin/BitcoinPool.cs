@@ -4,7 +4,7 @@ using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using Autofac;
 using AutoMapper;
-using JetBrains.Annotations;
+using Microsoft.IO;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
 using Miningcore.JsonRpc;
@@ -24,7 +24,6 @@ using static Miningcore.Util.ActionUtils;
 namespace Miningcore.Blockchain.Bitcoin;
 
 [CoinFamily(CoinFamily.Bitcoin)]
-[UsedImplicitly]
 public class BitcoinPool : PoolBase
 {
     public BitcoinPool(IComponentContext ctx,
@@ -34,8 +33,9 @@ public class BitcoinPool : PoolBase
         IMapper mapper,
         IMasterClock clock,
         IMessageBus messageBus,
+        RecyclableMemoryStreamManager rmsm,
         NicehashService nicehashService) :
-        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, nicehashService)
+        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, rmsm, nicehashService)
     {
     }
 
@@ -143,7 +143,7 @@ public class BitcoinPool : PoolBase
 
             banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-            CloseConnection(connection);
+            Disconnect(connection);
         }
     }
 
@@ -175,12 +175,10 @@ public class BitcoinPool : PoolBase
             else if(!context.IsSubscribed)
                 throw new StratumException(StratumError.NotSubscribed, "not subscribed");
 
-            // submit
             var requestParams = request.ParamsAs<string[]>();
-            var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
 
+            // submit
             var share = await manager.SubmitShareAsync(connection, requestParams, ct);
-
             await connection.RespondAsync(true, request.Id);
 
             // publish
@@ -197,7 +195,8 @@ public class BitcoinPool : PoolBase
 
             // update client stats
             context.Stats.ValidShares++;
-            await UpdateVarDiffAsync(connection);
+
+            await UpdateVarDiffAsync(connection, false, ct);
         }
 
         catch(StratumException ex)
@@ -315,21 +314,15 @@ public class BitcoinPool : PoolBase
         }
     }
 
-    protected virtual Task OnNewJobAsync(object jobParams)
+    protected virtual async Task OnNewJobAsync(object jobParams)
     {
         currentJobParams = jobParams;
 
-        logger.Info(() => "Broadcasting job");
+        logger.Info(() => $"Broadcasting job {((object[]) jobParams)[0]}");
 
-        return Guard(()=> Task.WhenAll(ForEachConnection(async connection =>
+        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
         {
-            if(!connection.IsAlive)
-                return;
-
             var context = connection.ContextAs<BitcoinWorkerContext>();
-
-            if(!context.IsSubscribed || !context.IsAuthorized || CloseIfDead(connection, context))
-                return;
 
             // varDiff: if the client has a pending difficulty change, apply it now
             if(context.ApplyPendingDifficulty())
@@ -337,7 +330,7 @@ public class BitcoinPool : PoolBase
 
             // send job
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
-        })), ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"));
+        }));
     }
 
     public override double HashrateFromShares(double shares, double interval)
@@ -393,9 +386,9 @@ public class BitcoinPool : PoolBase
         }
     }
 
-    protected override async Task InitStatsAsync()
+    protected override async Task InitStatsAsync(CancellationToken ct)
     {
-        await base.InitStatsAsync();
+        await base.InitStatsAsync(ct);
 
         blockchainStats = manager.BlockchainStats;
     }
@@ -461,16 +454,13 @@ public class BitcoinPool : PoolBase
         }
     }
 
-    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff)
+    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
     {
-        var context = connection.ContextAs<BitcoinWorkerContext>();
+        await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
 
-        context.EnqueueNewDifficulty(newDiff);
-
-        // apply immediately and notify
-        if(context.ApplyPendingDifficulty())
+        if(connection.Context.ApplyPendingDifficulty())
         {
-            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { context.Difficulty });
+            await connection.NotifyAsync(BitcoinStratumMethods.SetDifficulty, new object[] { connection.Context.Difficulty });
             await connection.NotifyAsync(BitcoinStratumMethods.MiningNotify, currentJobParams);
         }
     }

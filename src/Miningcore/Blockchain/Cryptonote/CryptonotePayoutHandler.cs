@@ -6,7 +6,6 @@ using Miningcore.Blockchain.Cryptonote.DaemonRequests;
 using Miningcore.Blockchain.Cryptonote.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
-using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Native;
@@ -40,9 +39,9 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
         IMessageBus messageBus) :
         base(cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus)
     {
-        Contract.RequiresNonNull(ctx, nameof(ctx));
-        Contract.RequiresNonNull(balanceRepo, nameof(balanceRepo));
-        Contract.RequiresNonNull(paymentRepo, nameof(paymentRepo));
+        Contract.RequiresNonNull(ctx);
+        Contract.RequiresNonNull(balanceRepo);
+        Contract.RequiresNonNull(paymentRepo);
 
         this.ctx = ctx;
     }
@@ -114,7 +113,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
             var info = infoResponse.Response.ToObject<GetInfoResponse>();
 
             if(info == null)
-                throw new PoolStartupException($"{LogCategory}] Unable to determine network type");
+                throw new PoolStartupException($"{LogCategory}] Unable to determine network type", poolConfig.Id);
 
             // chain detection
             if(!string.IsNullOrEmpty(info.NetType))
@@ -131,7 +130,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
                         networkType = CryptonoteNetworkType.Test;
                         break;
                     default:
-                        throw new PoolStartupException($"Unsupported net type '{info.NetType}'");
+                        throw new PoolStartupException($"Unsupported net type '{info.NetType}'", poolConfig.Id);
                 }
             }
 
@@ -293,7 +292,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
     public async Task ConfigureAsync(ClusterConfig cc, PoolConfig pc, CancellationToken ct)
     {
-        Contract.RequiresNonNull(pc, nameof(pc));
+        Contract.RequiresNonNull(pc);
 
         poolConfig = pc;
         clusterConfig = cc;
@@ -341,8 +340,8 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
     public async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
     {
-        Contract.RequiresNonNull(poolConfig, nameof(poolConfig));
-        Contract.RequiresNonNull(blocks, nameof(blocks));
+        Contract.RequiresNonNull(poolConfig);
+        Contract.RequiresNonNull(blocks);
 
         var coin = poolConfig.Template.As<CryptonoteCoinTemplate>();
         var pageSize = 100;
@@ -436,7 +435,7 @@ public class CryptonotePayoutHandler : PayoutHandlerBase,
 
     public async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
-        Contract.RequiresNonNull(balances, nameof(balances));
+        Contract.RequiresNonNull(balances);
 
         var coin = poolConfig.Template.As<CryptonoteCoinTemplate>();
 

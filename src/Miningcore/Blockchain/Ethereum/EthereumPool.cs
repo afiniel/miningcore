@@ -3,7 +3,7 @@ using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using Autofac;
 using AutoMapper;
-using JetBrains.Annotations;
+using Microsoft.IO;
 using Miningcore.Configuration;
 using Miningcore.JsonRpc;
 using Miningcore.Messaging;
@@ -20,7 +20,6 @@ using static Miningcore.Util.ActionUtils;
 namespace Miningcore.Blockchain.Ethereum;
 
 [CoinFamily(CoinFamily.Ethereum)]
-[UsedImplicitly]
 public class EthereumPool : PoolBase
 {
     public EthereumPool(IComponentContext ctx,
@@ -30,8 +29,9 @@ public class EthereumPool : PoolBase
         IMapper mapper,
         IMasterClock clock,
         IMessageBus messageBus,
+        RecyclableMemoryStreamManager rmsm,
         NicehashService nicehashService) :
-        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, nicehashService)
+        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, rmsm, nicehashService)
     {
     }
 
@@ -155,7 +155,7 @@ public class EthereumPool : PoolBase
 
             banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-            CloseConnection(connection);
+            Disconnect(connection);
         }
     }
 
@@ -218,7 +218,8 @@ public class EthereumPool : PoolBase
 
             // update client stats
             context.Stats.ValidShares++;
-            await UpdateVarDiffAsync(connection);
+
+            await UpdateVarDiffAsync(connection, false, ct);
         }
 
         catch(StratumException ex)
@@ -327,7 +328,7 @@ public class EthereumPool : PoolBase
 
             banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-            CloseConnection(connection);
+            Disconnect(connection);
         }
     }
 
@@ -390,9 +391,9 @@ public class EthereumPool : PoolBase
         }
     }
 
-    protected override async Task InitStatsAsync()
+    protected override async Task InitStatsAsync(CancellationToken ct)
     {
-        await base.InitStatsAsync();
+        await base.InitStatsAsync(ct);
 
         blockchainStats = manager.BlockchainStats;
     }
@@ -410,21 +411,15 @@ public class EthereumPool : PoolBase
         return context.Worker;
     }
 
-    protected virtual Task OnNewJobAsync()
+    protected virtual async Task OnNewJobAsync()
     {
         var currentJobParams = manager.GetJobParamsForStratum();
 
-        logger.Info(() => "Broadcasting job");
+        logger.Info(() => $"Broadcasting job {currentJobParams[0]}");
 
-        return Guard(()=> Task.WhenAll(ForEachConnection(async connection =>
+        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
         {
-            if(!connection.IsAlive)
-                return;
-
             var context = connection.ContextAs<EthereumWorkerContext>();
-
-            if(!context.IsSubscribed || !context.IsAuthorized || CloseIfDead(connection, context))
-                return;
 
             switch(context.ProtocolVersion)
             {
@@ -436,7 +431,7 @@ public class EthereumPool : PoolBase
                     await SendJob(context, connection, currentJobParams);
                     break;
             }
-        })), ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"));
+        }));
     }
 
     protected void EnsureProtocolVersion(EthereumWorkerContext context, int version)
@@ -526,11 +521,10 @@ public class EthereumPool : PoolBase
 
     public override double ShareMultiplier => 1;
 
-    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff)
+    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
     {
-        await base.OnVarDiffUpdateAsync(connection, newDiff);
+        await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
 
-        // apply immediately and notify client
         var context = connection.ContextAs<EthereumWorkerContext>();
 
         if(context.ApplyPendingDifficulty())

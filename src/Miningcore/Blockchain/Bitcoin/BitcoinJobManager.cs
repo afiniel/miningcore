@@ -46,8 +46,6 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     protected async Task<RpcResponse<BlockTemplate>> GetBlockTemplateAsync(CancellationToken ct)
     {
-        logger.LogInvoke();
-
         var result = await rpc.ExecuteAsync<BlockTemplate>(logger,
             BitcoinCommands.GetBlockTemplate, ct, extraPoolConfig?.GBTArgs ?? (object) GetBlockTemplateParams());
 
@@ -56,8 +54,6 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     protected RpcResponse<BlockTemplate> GetBlockTemplateFromJson(string json)
     {
-        logger.LogInvoke();
-
         var result = JsonConvert.DeserializeObject<JsonRpcResponse>(json);
 
         return new RpcResponse<BlockTemplate>(result!.ResultAs<BlockTemplate>());
@@ -81,8 +77,6 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     protected override async Task<(bool IsNew, bool Force)> UpdateJob(CancellationToken ct, bool forceUpdate, string via = null, string json = null)
     {
-        logger.LogInvoke();
-
         try
         {
             if(forceUpdate)
@@ -157,6 +151,11 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
             return (isNew, forceUpdate);
         }
 
+        catch(OperationCanceledException)
+        {
+            // ignored
+        }
+
         catch(Exception ex)
         {
             logger.Error(ex, () => $"Error during {nameof(UpdateJob)}");
@@ -189,7 +188,7 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
 
     public virtual object[] GetSubscriberData(StratumConnection worker)
     {
-        Contract.RequiresNonNull(worker, nameof(worker));
+        Contract.RequiresNonNull(worker);
 
         var context = worker.ContextAs<BitcoinWorkerContext>();
 
@@ -209,10 +208,8 @@ public class BitcoinJobManager : BitcoinJobManagerBase<BitcoinJob>
     public virtual async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission,
         CancellationToken ct)
     {
-        Contract.RequiresNonNull(worker, nameof(worker));
-        Contract.RequiresNonNull(submission, nameof(submission));
-
-        logger.LogInvoke(new object[] { worker.ConnectionId });
+        Contract.RequiresNonNull(worker);
+        Contract.RequiresNonNull(submission);
 
         if(submission is not object[] submitParams)
             throw new StratumException(StratumError.Other, "invalid params");

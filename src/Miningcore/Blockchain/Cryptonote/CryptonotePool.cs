@@ -4,7 +4,7 @@ using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using Autofac;
 using AutoMapper;
-using JetBrains.Annotations;
+using Microsoft.IO;
 using Miningcore.Blockchain.Cryptonote.StratumRequests;
 using Miningcore.Blockchain.Cryptonote.StratumResponses;
 using Miningcore.Configuration;
@@ -24,7 +24,6 @@ using static Miningcore.Util.ActionUtils;
 namespace Miningcore.Blockchain.Cryptonote;
 
 [CoinFamily(CoinFamily.Cryptonote)]
-[UsedImplicitly]
 public class CryptonotePool : PoolBase
 {
     public CryptonotePool(IComponentContext ctx,
@@ -34,8 +33,9 @@ public class CryptonotePool : PoolBase
         IMapper mapper,
         IMasterClock clock,
         IMessageBus messageBus,
+        RecyclableMemoryStreamManager rmsm,
         NicehashService nicehashService) :
-        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, nicehashService)
+        base(ctx, serializerSettings, cf, statsRepo, mapper, clock, messageBus, rmsm, nicehashService)
     {
     }
 
@@ -143,7 +143,7 @@ public class CryptonotePool : PoolBase
 
             banManager.Ban(connection.RemoteEndpoint.Address, loginFailureBanTimeout);
 
-            CloseConnection(connection);
+            Disconnect(connection);
         }
     }
 
@@ -241,9 +241,8 @@ public class CryptonotePool : PoolBase
             if(!job.Submissions.TryAdd(submitRequest.Nonce, true))
                 throw new StratumException(StratumError.MinusOne, "duplicate share");
 
-            var poolEndpoint = poolConfig.Ports[connection.LocalEndpoint.Port];
-
-            var share = await manager.SubmitShareAsync(connection, submitRequest, job, poolEndpoint.Difficulty, ct);
+            // submit
+            var share = await manager.SubmitShareAsync(connection, submitRequest, job, ct);
             await connection.RespondAsync(new CryptonoteResponseBase(), request.Id);
 
             // publish
@@ -260,7 +259,8 @@ public class CryptonotePool : PoolBase
 
             // update client stats
             context.Stats.ValidShares++;
-            await UpdateVarDiffAsync(connection);
+
+            await UpdateVarDiffAsync(connection, false, ct);
         }
 
         catch(StratumException ex)
@@ -284,24 +284,16 @@ public class CryptonotePool : PoolBase
         return Interlocked.Increment(ref currentJobId).ToString(CultureInfo.InvariantCulture);
     }
 
-    private Task OnNewJobAsync()
+    private async Task OnNewJobAsync()
     {
-        logger.Info(() => "Broadcasting job");
+        logger.Info(() => "Broadcasting jobs");
 
-        return Guard(()=> Task.WhenAll(ForEachConnection(async connection =>
+        await Guard(() => ForEachMinerAsync(async (connection, ct) =>
         {
-            if(!connection.IsAlive)
-                return;
-
-            var context = connection.ContextAs<CryptonoteWorkerContext>();
-
-            if(!context.IsSubscribed || !context.IsAuthorized || CloseIfDead(connection, context))
-                return;
-
             // send job
             var job = CreateWorkerJob(connection);
             await connection.NotifyAsync(CryptonoteStratumMethods.JobNotify, job);
-        })), ex=> logger.Debug(() => $"{nameof(OnNewJobAsync)}: {ex.Message}"));
+        }));
     }
 
     #region Overrides
@@ -349,9 +341,9 @@ public class CryptonotePool : PoolBase
         return null;
     }
 
-    protected override async Task InitStatsAsync()
+    protected override async Task InitStatsAsync(CancellationToken ct)
     {
-        await base.InitStatsAsync();
+        await base.InitStatsAsync(ct);
 
         blockchainStats = manager.BlockchainStats;
     }
@@ -410,14 +402,11 @@ public class CryptonotePool : PoolBase
 
     public override double ShareMultiplier => 1;
 
-    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff)
+    protected override async Task OnVarDiffUpdateAsync(StratumConnection connection, double newDiff, CancellationToken ct)
     {
-        await base.OnVarDiffUpdateAsync(connection, newDiff);
+        await base.OnVarDiffUpdateAsync(connection, newDiff, ct);
 
-        // apply immediately and notify client
-        var context = connection.ContextAs<CryptonoteWorkerContext>();
-
-        if(context.ApplyPendingDifficulty())
+        if(connection.Context.ApplyPendingDifficulty())
         {
             // re-send job
             var job = CreateWorkerJob(connection);

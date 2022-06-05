@@ -4,7 +4,6 @@ using Miningcore.Blockchain.Bitcoin.Configuration;
 using Miningcore.Blockchain.Bitcoin.DaemonResponses;
 using Miningcore.Configuration;
 using Miningcore.Extensions;
-using Miningcore.JsonRpc;
 using Miningcore.Messaging;
 using Miningcore.Mining;
 using Miningcore.Payments;
@@ -37,9 +36,9 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
         IMessageBus messageBus) :
         base(cf, mapper, shareRepo, blockRepo, balanceRepo, paymentRepo, clock, messageBus)
     {
-        Contract.RequiresNonNull(ctx, nameof(ctx));
-        Contract.RequiresNonNull(balanceRepo, nameof(balanceRepo));
-        Contract.RequiresNonNull(paymentRepo, nameof(paymentRepo));
+        Contract.RequiresNonNull(ctx);
+        Contract.RequiresNonNull(balanceRepo);
+        Contract.RequiresNonNull(paymentRepo);
 
         this.ctx = ctx;
     }
@@ -55,7 +54,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     public virtual Task ConfigureAsync(ClusterConfig cc, PoolConfig pc, CancellationToken ct)
     {
-        Contract.RequiresNonNull(pc, nameof(pc));
+        Contract.RequiresNonNull(pc);
 
         poolConfig = pc;
         clusterConfig = cc;
@@ -73,8 +72,8 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     public virtual async Task<Block[]> ClassifyBlocksAsync(IMiningPool pool, Block[] blocks, CancellationToken ct)
     {
-        Contract.RequiresNonNull(poolConfig, nameof(poolConfig));
-        Contract.RequiresNonNull(blocks, nameof(blocks));
+        Contract.RequiresNonNull(poolConfig);
+        Contract.RequiresNonNull(blocks);
 
         var coin = poolConfig.Template.As<CoinTemplate>();
         var pageSize = 100;
@@ -189,7 +188,7 @@ public class BitcoinPayoutHandler : PayoutHandlerBase,
 
     public virtual async Task PayoutAsync(IMiningPool pool, Balance[] balances, CancellationToken ct)
     {
-        Contract.RequiresNonNull(balances, nameof(balances));
+        Contract.RequiresNonNull(balances);
 
         // build args
         var amounts = balances

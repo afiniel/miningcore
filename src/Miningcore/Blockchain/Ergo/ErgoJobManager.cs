@@ -9,7 +9,6 @@ using Miningcore.Mining;
 using Miningcore.Notifications.Messages;
 using Miningcore.Stratum;
 using Miningcore.Time;
-using Miningcore.Util;
 using Newtonsoft.Json;
 using Contract = Miningcore.Contracts.Contract;
 using static Miningcore.Util.ActionUtils;
@@ -25,8 +24,8 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
         IExtraNonceProvider extraNonceProvider) :
         base(ctx, messageBus)
     {
-        Contract.RequiresNonNull(clock, nameof(clock));
-        Contract.RequiresNonNull(extraNonceProvider, nameof(extraNonceProvider));
+        Contract.RequiresNonNull(clock);
+        Contract.RequiresNonNull(extraNonceProvider);
 
         this.clock = clock;
         this.extraNonceProvider = extraNonceProvider;
@@ -94,8 +93,6 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
     private async Task<(bool IsNew, bool Force)> UpdateJob(bool forceUpdate, string via = null, string json = null)
     {
-        logger.LogInvoke();
-
         try
         {
             var blockTemplate = string.IsNullOrEmpty(json) ?
@@ -162,6 +159,11 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
             return (isNew, forceUpdate);
         }
 
+        catch(OperationCanceledException)
+        {
+            // ignored
+        }
+
         catch(ApiException<ApiError> ex)
         {
             logger.Error(() => $"Error during {nameof(UpdateJob)}: {ex.Result.Detail ?? ex.Result.Reason}");
@@ -177,8 +179,6 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
     private async Task<WorkMessage> GetBlockTemplateAsync()
     {
-        logger.LogInvoke();
-
         var work = await rpc.MiningRequestBlockCandidateAsync(CancellationToken.None);
 
         return work;
@@ -186,8 +186,6 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
     private WorkMessage GetBlockTemplateFromJson(string json)
     {
-        logger.LogInvoke();
-
         return JsonConvert.DeserializeObject<WorkMessage>(json);
     }
 
@@ -244,7 +242,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
     public object[] GetSubscriberData(StratumConnection worker)
     {
-        Contract.RequiresNonNull(worker, nameof(worker));
+        Contract.RequiresNonNull(worker);
 
         var context = worker.ContextAs<ErgoWorkerContext>();
 
@@ -261,12 +259,10 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
         return responseData;
     }
 
-    public async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission, double stratumDifficultyBase, CancellationToken ct)
+    public async ValueTask<Share> SubmitShareAsync(StratumConnection worker, object submission, CancellationToken ct)
     {
-        Contract.RequiresNonNull(worker, nameof(worker));
-        Contract.RequiresNonNull(submission, nameof(submission));
-
-        logger.LogInvoke(new[] { worker.ConnectionId });
+        Contract.RequiresNonNull(worker);
+        Contract.RequiresNonNull(submission);
 
         if(submission is not object[] submitParams)
             throw new StratumException(StratumError.Other, "invalid params");
@@ -354,23 +350,23 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
     {
         // validate pool address
         if(string.IsNullOrEmpty(poolConfig.Address))
-            throw new PoolStartupException($"Pool address is not configured");
+            throw new PoolStartupException($"Pool address is not configured", poolConfig.Id);
 
         var validity = await Guard(() => rpc.CheckAddressValidityAsync(poolConfig.Address, ct),
-            ex=> throw new PoolStartupException($"Error validating pool address: {ex}"));
+            ex=> throw new PoolStartupException($"Error validating pool address: {ex}", poolConfig.Id));
 
         if(!validity.IsValid)
-            throw new PoolStartupException($"Daemon reports pool address {poolConfig.Address} as invalid: {validity.Error}");
+            throw new PoolStartupException($"Daemon reports pool address {poolConfig.Address} as invalid: {validity.Error}", poolConfig.Id);
 
         var info = await Guard(() => rpc.GetNodeInfoAsync(ct),
-            ex=> throw new PoolStartupException($"Daemon reports: {ex.Message}"));
+            ex=> throw new PoolStartupException($"Daemon reports: {ex.Message}", poolConfig.Id));
 
         blockVersion = info.Parameters.BlockVersion;
 
         // chain detection
         var m = ErgoConstants.RegexChain.Match(info.Name);
         if(!m.Success)
-            throw new PoolStartupException($"Unable to identify network type ({info.Name}");
+            throw new PoolStartupException($"Unable to identify network type ({info.Name}", poolConfig.Id);
 
         network = m.Groups[1].Value.ToLower();
 
@@ -381,7 +377,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
             var walletAddresses = await rpc.WalletAddressesAsync(ct);
 
             if(!walletAddresses.Contains(poolConfig.Address))
-                throw new PoolStartupException($"Pool address {poolConfig.Address} is not controlled by wallet");
+                throw new PoolStartupException($"Pool address {poolConfig.Address} is not controlled by wallet", poolConfig.Id);
         }
 
         // update stats
@@ -411,10 +407,10 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
     protected override async Task<bool> AreDaemonsHealthyAsync(CancellationToken ct)
     {
         var info = await Guard(() => rpc.GetNodeInfoAsync(ct),
-            ex=> throw new PoolStartupException($"Daemon reports: {ex.Message}"));
+            ex=> throw new PoolStartupException($"Daemon reports: {ex.Message}", poolConfig.Id));
 
         if(info?.IsMining != true)
-            throw new PoolStartupException($"Mining is disabled in Ergo Daemon");
+            throw new PoolStartupException("Mining is disabled in Ergo Daemon", poolConfig.Id);
 
         return true;
     }
@@ -429,9 +425,11 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
 
     protected override async Task EnsureDaemonsSynchedAsync(CancellationToken ct)
     {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+
         var syncPendingNotificationShown = false;
 
-        while(true)
+        do
         {
             var work = await Guard(() => rpc.MiningRequestBlockCandidateAsync(ct),
                 ex=> logger.Debug(ex));
@@ -451,10 +449,7 @@ public class ErgoJobManager : JobManagerBase<ErgoJob>
             }
 
             await ShowDaemonSyncProgressAsync();
-
-            // delay retry by 5s
-            await Task.Delay(5000, ct);
-        }
+        } while(await timer.WaitForNextTickAsync(ct));
     }
 
     private object[] GetJobParamsForStratum(bool isNew)

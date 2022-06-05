@@ -57,9 +57,9 @@ public class Dag : IDisposable
         }
     }
 
-    public async ValueTask GenerateAsync(string dagDir, ILogger logger, CancellationToken ct)
+    public async Task GenerateAsync(string dagDir, ILogger logger, CancellationToken ct)
     {
-        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(dagDir), $"{nameof(dagDir)} must not be empty");
+        Contract.Requires<ArgumentException>(!string.IsNullOrEmpty(dagDir));
 
         if(handle == IntPtr.Zero)
         {
@@ -114,9 +114,7 @@ public class Dag : IDisposable
 
     public unsafe bool Compute(ILogger logger, byte[] hash, ulong nonce, out byte[] mixDigest, out byte[] result)
     {
-        Contract.RequiresNonNull(hash, nameof(hash));
-
-        logger.LogInvoke();
+        Contract.RequiresNonNull(hash);
 
         var sw = Stopwatch.StartNew();
 
